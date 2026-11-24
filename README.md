@@ -213,4 +213,4 @@ the threshold definition used.
   free-text name), multi-turn coreference in the offline brain, a live Claude eval run, and an LLM-judge
   score for answer quality.
 
-See [`plan.md`](plan.md) for the step-by-step build plan and [`docs/DATA.md`](docs/DATA.md) for dataset quirks.
+See [`docs/DATA.md`](docs/DATA.md) for dataset quirks.
