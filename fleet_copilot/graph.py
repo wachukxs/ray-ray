@@ -131,9 +131,9 @@ def build_graph(rt: Runtime, checkpointer=None):
         upd = {"tool_log": state.get("tool_log", []) + results, "pending_calls": [],
                "ledger": _ledger_dict(ctx.ledger), "proposals": [p.to_dict() for p in ctx.proposals],
                "trace": state["trace"] + trace}
-        msg = rt.brain.tool_results_message(results)
+        msg = rt.brain.tool_results_message(results)   # one message, or one per tool call
         if msg:
-            upd["messages"] = state.get("messages", []) + [msg]
+            upd["messages"] = state.get("messages", []) + (msg if isinstance(msg, list) else [msg])
         return upd
 
     def verifier(state: AgentState) -> dict:

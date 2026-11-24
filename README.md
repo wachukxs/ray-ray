@@ -4,9 +4,10 @@ An agentic copilot for IT admins over device telemetry. It answers fleet health 
 questions with cited evidence, surfaces trends, and proposes operational actions that run only
 after a human approves them.
 
-Built with **LangGraph** (explicit agent graph and human-in-the-loop interrupt) and the
-**Anthropic SDK** (Claude brain). It also has a **deterministic offline brain**, so the full
-system and its eval suite run without an API key.
+Built with **LangGraph** (explicit agent graph and human-in-the-loop interrupt). The model that
+drives it is pluggable: a **Claude brain** on the Anthropic SDK, a **LangChain brain** for any
+provider LangChain supports (OpenAI, Google Gemini, Anthropic, ...), and a **deterministic offline
+brain**, so the full system and its eval suite run without an API key.
 
 ```
 admin > Which devices at Acme are low on disk space?
@@ -25,6 +26,7 @@ Requires Python 3.11+.
 python -m venv .venv
 # Windows: .venv\Scripts\activate    macOS/Linux: source .venv/bin/activate
 pip install -e ".[dev]"
+pip install -e ".[langchain]"   # optional: only for the LangChain brain (OpenAI, Gemini, ...)
 ```
 
 The dataset is already in `data/raw/device-telemetry-dataset.ndjson`.
@@ -37,7 +39,7 @@ Settings are read from environment variables. The copilot also loads a `.env` fi
 
 ```bash
 cp .env.example .env        # Windows PowerShell: Copy-Item .env.example .env
-# then edit .env and set ANTHROPIC_API_KEY=sk-ant-...
+# then edit .env and set the key for the provider you use
 ```
 
 | variable | default | purpose |
@@ -46,6 +48,9 @@ cp .env.example .env        # Windows PowerShell: Copy-Item .env.example .env
 | `FLEET_COPILOT_MODE` | `claude` if a key is set, else `offline` | which brain to use (`--mode` on the CLI overrides it) |
 | `FLEET_COPILOT_MODEL` | `claude-opus-5-5` | Claude model ID |
 | `FLEET_COPILOT_EFFORT` | `medium` | Claude effort: `low` · `medium` · `high` · `xhigh` · `max` |
+| `FLEET_COPILOT_LC_MODEL` | unset | LangChain brain model as `provider:model`, e.g. `openai:<model>`, `google_genai:<model>`, `anthropic:<model>` |
+| `FLEET_COPILOT_LC_TEMPERATURE` | unset | optional temperature for the LangChain brain (left unset by default because some current models reject it) |
+| `OPENAI_API_KEY` / `GOOGLE_API_KEY` | unset | provider key read by LangChain for `openai:` / `google_genai:` models |
 | `FLEET_DATA_PATH` | `data/raw/device-telemetry-dataset.ndjson` | telemetry file |
 | `FLEET_STATE_DIR` | `state/` | audit log and executed actions |
 
@@ -54,7 +59,16 @@ cp .env.example .env        # Windows PowerShell: Copy-Item .env.example .env
 | mode | how | when |
 |---|---|---|
 | `offline` (default without a key) | rule-based planner + recipes | reproducible demo and evals, no network |
-| `claude` | set `ANTHROPIC_API_KEY` in `.env` or your shell (or pass `--mode claude`) | natural-language robustness |
+| `claude` | set `ANTHROPIC_API_KEY` in `.env` or your shell (or pass `--mode claude`) | natural-language robustness, with Claude-specific features (effort, refusal fallbacks) |
+| `langchain` | `FLEET_COPILOT_MODE=langchain` (or `--mode langchain`) + `FLEET_COPILOT_LC_MODEL` + that provider's key | any LangChain-supported provider; compare models on the same eval suite |
+
+Example `.env` for OpenAI or Gemini:
+
+```bash
+FLEET_COPILOT_MODE=langchain
+FLEET_COPILOT_LC_MODEL=openai:<model-name>         # or google_genai:<model-name>
+OPENAI_API_KEY=sk-...                               # or GOOGLE_API_KEY=...
+```
 
 ## 2. Run the agent
 
@@ -77,11 +91,13 @@ Things to try: "Give me a fleet health summary", "Which batteries are approachin
 ```bash
 python -m evals.run                  # offline brain: deterministic, about 5 s
 python -m evals.run --mode claude    # same suite against the Claude brain (needs ANTHROPIC_API_KEY)
+python -m evals.run --mode langchain # same suite against FLEET_COPILOT_LC_MODEL (any provider)
 python -m evals.run --only act- -v   # subset, with traces for failures
-pytest                               # 26 unit tests (incl. Claude tool loop against a stub client)
+pytest                               # 33 unit tests (incl. Claude and LangChain tool loops against scripted models)
 ```
 
-The runner writes `evals/results/report-<mode>.md` and `.json`. It exits non-zero if any safety
+The runner writes `evals/results/report-<mode>.md` and `.json` (LangChain runs include the model in the
+name, e.g. `report-langchain-openai-<model>.md`, so providers can be compared side by side). It exits non-zero if any safety
 invariant is violated or the pass rate drops below 90%.
 
 **Current results (offline brain)**
@@ -102,9 +118,10 @@ How to read this honestly: I built the offline router alongside the core cases, 
 that the **safety layer** (policy, verifier, approval, tenant scope) holds and that the routing handles
 the phrasings it was written for. The **held-out set** measures language robustness: the keyword router
 gets 2/8. All six failures were safe (a polite out-of-scope decline, or a correctly cited answer to the
-wrong question). None invented data. Closing that gap is what the Claude brain is for. I have not run
-`--mode claude` in this environment (no API key available). The Claude loop is covered by unit tests
-against a scripted client, so its first live eval run is the next thing to do.
+wrong question). None invented data. Closing that gap is what the LLM brains are for. I have not run
+`--mode claude` or `--mode langchain` in this environment (no API keys available). Both tool loops are
+covered by unit tests against scripted models, and the OpenAI, Gemini and Anthropic LangChain models were
+constructed and bound to all 17 tools offline. Their first live eval runs are the next thing to do.
 
 ## 4. Agent architecture
 
@@ -124,8 +141,8 @@ flowchart LR
 ```
 
 - **Explicit loop.** `agent ⇄ tools` is a graph cycle, capped at 8 steps. The planner's plan is stored in
-  state, shown with `-v`, written to the audit log, and injected into the Claude system prompt.
-- **Brain vs. graph.** The brain (offline or Claude) only decides *what to do next* and writes text. Every
+  state, shown with `-v`, written to the audit log, and injected into the LLM brains' system prompt.
+- **Brain vs. graph.** The brain (offline, Claude or LangChain) only decides *what to do next* and writes text. Every
   control (tenant scope, argument validation, evidence policy, approval, verification, audit) lives in
   graph nodes and the tool layer, so it holds whichever brain is plugged in.
 - **Human in the loop.** `approval` calls LangGraph `interrupt()`. The graph checkpoints and stops, and
@@ -135,6 +152,10 @@ flowchart LR
   manual Messages loop with the tool catalog. Assistant content is appended unchanged; tool results go back as
   `tool_result` blocks. Verifier feedback is a follow-up user turn. Refusal fallback is enabled
   (`fallbacks: "default"`).
+- **LangChain brain** (`brains/lc.py`): `init_chat_model("provider:model")`, `with_structured_output(Plan)` for
+  planning, `bind_tools` for acting. It uses the same prompts as the Claude brain (`brains/prompts.py`), so an
+  eval comparison measures the model, not prompt differences. Messages are stored in graph state as plain
+  dicts so the checkpointer can serialise them for any provider. Tool-call IDs are assigned if a provider omits them.
 - **Offline brain** (`brains/offline.py`): an intent router chooses a recipe. Recipes are multi-step: e.g.
   *find failing devices → one ticket proposal per device*. Answers are composed only from tool output.
 
@@ -147,7 +168,7 @@ fleet_copilot/
   actions.py     proposals, evidence policy, mock executor
   guardrails.py  input guard, grounding verifier
   graph.py       LangGraph agent
-  brains/        offline.py, claude.py
+  brains/        offline.py, claude.py, lc.py (LangChain), prompts.py (shared)
   audit.py       hash-chained JSONL audit log
   copilot.py     session facade · cli.py
 evals/           cases.yaml, independent ground truth, runner, reports
@@ -225,11 +246,16 @@ the threshold definition used.
   of thing that makes proposed actions actually executable.
 - **Mock executors.** Actions are written to `state/actions.jsonl` with idempotent IDs. Real integrations
   (ITSM, procurement, Slack) would plug into `ActionStore.execute`.
+- **Two LLM brains instead of one abstraction.** The Claude brain calls the Anthropic SDK directly to use
+  Claude-specific features (effort, refusal fallbacks, passing thinking blocks back unchanged). The LangChain
+  brain trades those for one config switch across providers. Provider choice is then an eval result, not an
+  assumption. Note: Gemini's schema conversion drops `additionalProperties`; unknown arguments (e.g. a
+  `company_id`) are still rejected by our own Pydantic validation when the tool runs.
 - **Determinism.** Current Claude models don't accept `temperature`, so Claude mode can't be made
   bit-for-bit reproducible. Variance is bounded by deterministic tools, the verifier and the policy. The
   offline suite is bit-for-bit reproducible.
 - **Not built (time-boxed):** persistence beyond in-memory checkpoints, auth/RBAC for approvers (approver is a
-  free-text name), multi-turn coreference in the offline brain, a live Claude eval run, and an LLM-judge
+  free-text name), multi-turn coreference in the offline brain, live Claude and LangChain eval runs, and an LLM-judge
   score for answer quality.
 
 See [`docs/DATA.md`](docs/DATA.md) for dataset quirks.

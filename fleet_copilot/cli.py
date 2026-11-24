@@ -119,8 +119,8 @@ def main(argv: list[str] | None = None) -> int:
     sub = p.add_subparsers(dest="cmd", required=True)
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--tenant", required=True, help="acme | globex | initech (or company id)")
-    common.add_argument("--mode", choices=["offline", "claude"], default=None,
-                        help="brain to use (default: claude if ANTHROPIC_API_KEY is set, else offline)")
+    common.add_argument("--mode", choices=["offline", "claude", "langchain"], default=None,
+                        help="brain to use (default: claude if ANTHROPIC_API_KEY is set, else offline; langchain uses FLEET_COPILOT_LC_MODEL)")
     common.add_argument("--approver", default="cli-admin", help="name recorded in the audit log for decisions")
     common.add_argument("-v", "--verbose", action="store_true", help="show plan / tool / verifier trace")
     s = sub.add_parser("ask", parents=[common], help="one question")
@@ -136,7 +136,11 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("tenants", help="list tenants")
     s.set_defaults(fn=cmd_tenants)
     a = p.parse_args(argv)
-    return a.fn(a)
+    try:
+        return a.fn(a)
+    except ValueError as e:   # configuration errors (missing/unknown model, bad tenant) - no traceback
+        console.print(f"[red]Configuration error:[/red] {escape(str(e))}")
+        return 2
 
 
 if __name__ == "__main__":

@@ -52,6 +52,11 @@ MAX_NOTIFY_MESSAGE_CHARS = 500
 CLAUDE_MODEL = os.environ.get("FLEET_COPILOT_MODEL", "claude-opus-5-5")
 CLAUDE_EFFORT = os.environ.get("FLEET_COPILOT_EFFORT", "medium")
 
+# LangChain brain: any provider init_chat_model supports, as "provider:model".
+LANGCHAIN_MODEL = os.environ.get("FLEET_COPILOT_LC_MODEL") or None
+_lc_temp = os.environ.get("FLEET_COPILOT_LC_TEMPERATURE")
+LANGCHAIN_TEMPERATURE = float(_lc_temp) if _lc_temp else None
+
 
 def default_mode() -> str:
     """offline unless explicitly asked for claude (or a key is present and mode unset)."""

@@ -321,7 +321,7 @@ def write_report(results: list[dict], summary: dict, out_dir: Path) -> Path:
 
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--mode", choices=["offline", "claude"], default="offline")
+    ap.add_argument("--mode", choices=["offline", "claude", "langchain"], default="offline")
     ap.add_argument("--only", default=None, help="run only case ids starting with this prefix")
     ap.add_argument("--min-pass", type=float, default=0.9)
     ap.add_argument("--out", default=str(HERE / "results"))
@@ -366,7 +366,10 @@ def main(argv: list[str] | None = None) -> int:
     if not results:
         print("no cases selected")
         return 1
-    summary = summarize(results, a.mode)
+    label = a.mode
+    if a.mode == "langchain":  # one report per provider/model, e.g. report-langchain-openai-gpt-x.md
+        label = "langchain-" + re.sub(r"[^A-Za-z0-9.]+", "-", config.LANGCHAIN_MODEL or "unset").strip("-")
+    summary = summarize(results, label)
     path = write_report(results, summary, Path(a.out))
     print("\n" + "\n".join(f"{k:28} {v}" for k, v in summary.items()))
     print(f"\nreport: {path}")
