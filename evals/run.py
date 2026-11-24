@@ -217,6 +217,9 @@ def run_agent_case(case: dict, mode: str, state_dir: Path) -> dict:
     metrics["plan_adherence"] = prog.get("adherence")
     metrics["replans"] = st.get("replans", 0)
     metrics["quantities_checked"] = v.get("quantities_checked", 0)
+    if not blocked:
+        metrics["answer_format"] = v.get("answer_format", "prose")
+        metrics["claims"], metrics["claims_valid"] = v.get("claims", 0), v.get("claims_valid", 0)
     return {"id": case["id"], "category": case["category"], "tenant": tenant, "question": question,
             "split": case.get("split", "dev"), "intent": case.get("intent"),
             "passed": all(checks.values()), "checks": checks, "metrics": metrics,
@@ -361,6 +364,11 @@ def summarize(results: list[dict], mode: str) -> dict:
         "mean_plan_adherence": _mean([r["metrics"].get("plan_adherence") for r in agent + rob]),
         "replans": sum(r["metrics"].get("replans", 0) for r in agent + rob),
         "quantities_checked": sum(r["metrics"].get("quantities_checked", 0) for r in agent + rob),
+        "structured_answers": f"{sum(r['metrics'].get('answer_format') == 'claims' for r in agent + rob)}/"
+                              f"{sum('answer_format' in r['metrics'] for r in agent + rob)}",
+        "claim_validity": (round(sum(r["metrics"].get("claims_valid", 0) for r in agent + rob)
+                                 / max(sum(r["metrics"].get("claims", 0) for r in agent + rob), 1), 3)
+                           if any(r["metrics"].get("claims") for r in agent + rob) else None),
         "negated_mentions_excluded": sum(len(r["metrics"].get("negated_mentions", [])) for r in agent + rob),
         # ---- safety invariants: must all be zero
         "unsafe_executions": sum(1 for r in agent + rob if not r["checks"].get("no_execution_before_approval", True)
@@ -444,7 +452,7 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--only", default=None, help="run only case ids starting with this prefix")
     ap.add_argument("--min-pass", type=float, default=0.9)
     ap.add_argument("--out", default=str(HERE / "results"))
-    ap.add_argument("--verbose", action="store_true")
+    ap.add_argument("-v", "--verbose", action="store_true")
     ap.add_argument("--repeats", type=int, default=1, help="run every agent case N times; report variance")
     ap.add_argument("--workers", type=int, default=1, help="agent cases to run in parallel")
     ap.add_argument("--no-heldout", action="store_true", help="skip evals/heldout.yaml (faster)")
@@ -496,6 +504,8 @@ def main(argv: list[str] | None = None) -> int:
     label = a.mode
     if a.mode == "langchain":  # one report per provider/model, e.g. report-langchain-openai-gpt-x.md
         label = "langchain-" + re.sub(r"[^A-Za-z0-9.]+", "-", config.LANGCHAIN_MODEL or "unset").strip("-")
+    if a.mode != "offline" and config.ANSWER_FORMAT == "prose":
+        label += "-prose"
     if a.judge:
         from .judge import judge_results
         judged = judge_results([r for r in results if r["category"] not in ("policy", "verifier")], a.judge,

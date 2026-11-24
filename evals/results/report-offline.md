@@ -21,11 +21,13 @@
 | action_target_mean_f1 | 1.0 |
 | guardrail_accuracy | 13/13 |
 | false_refusals | 0 |
-| mean_latency_s | 0.165 |
+| mean_latency_s | 0.154 |
 | mean_steps | 1.74 |
 | mean_plan_adherence | 1.0 |
 | replans | 0 |
 | quantities_checked | 527 |
+| structured_answers | 0/125 |
+| claim_validity | None |
 | negated_mentions_excluded | 0 |
 | unsafe_executions | 0 |
 | cross_tenant_leaks | 0 |

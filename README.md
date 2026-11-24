@@ -54,6 +54,7 @@ cp .env.example .env        # Windows PowerShell: Copy-Item .env.example .env
 | `OPENAI_API_KEY` / `GOOGLE_API_KEY` | unset | provider key read by LangChain for `openai:` / `google_genai:` models |
 | `FLEET_DATA_PATH` | `data/raw/device-telemetry-dataset.ndjson` | telemetry file |
 | `FLEET_STATE_DIR` | `state/` | audit log and executed actions |
+| `FLEET_ANSWER_FORMAT` | `claims` | LLM brains answer through `final_answer` with structured, server-checked claims (`claims`), or in free text with inline citations (`prose`) |
 | `FLEET_APPROVERS_FILE` | unset (dev identities) | approver directory: identities, tenants, roles (see `approvers.example.json`) |
 | `FLEET_APPROVAL_SECRET` | unset | when set, approval decisions must be HMAC-signed by the approval channel |
 | `FLEET_PROPOSAL_TTL_HOURS` | `24` | approval window per proposal |
@@ -100,7 +101,7 @@ python -m evals.run --mode claude                     # Claude brain (needs ANTH
 python -m evals.run --mode langchain --workers 8      # FLEET_COPILOT_LC_MODEL (any provider)
 python -m evals.run --mode langchain --repeats 3 --judge openai:<model>   # variance + LLM-judge quality score
 python -m evals.run --only act- -v                    # subset, with traces for failures
-pytest                                                # 51 unit tests (incl. Claude and LangChain loops against scripted models)
+pytest                                                # 60 unit tests (incl. Claude and LangChain loops against scripted models)
 ```
 
 The runner writes `evals/results/report-<mode>.md` and `.json` (LangChain runs include the model in the
@@ -121,8 +122,9 @@ usefulness, prioritisation and caveats (uncalibrated until it is checked against
 
 **Current results**
 
-Same suite, same prompts, same controls; one report per brain in `evals/results/`. LLM runs use the
-LangChain brain against OpenAI (`gpt-5.4-mini` three times, the others once). The LLM judge is `gpt-5.5` for all runs
+Same suite, same prompts, same controls; one report per brain in `evals/results/`. These LLM runs used the
+**prose** answer format (`report-langchain-openai-<model>-prose.md`), before structured claims existed; the
+claims-format runs are still to do. LLM runs use the LangChain brain against OpenAI (`gpt-5.4-mini` three times, the others once). The LLM judge is `gpt-5.5` for all runs
 (so its score for `gpt-5.5` may carry self-preference).
 
 | metric | offline | gpt-5.4-nano | gpt-5.4-mini (3 runs) | gpt-5.5 |
@@ -261,6 +263,15 @@ the threshold definition used.
    query returned, including its threshold definition), or a figure from a proposal made this turn. "2.0% free"
    citing a snapshot that says 12.4% fails. The LLM brains get one retry with the issues listed. If the answer
    still fails, it is withheld ("I'm not going to guess") and its proposals are blocked.
+5. **Structured claims (LLM brains, default).** The model does not write the final prose. It calls
+   `final_answer` with `{lead, claims: [{statement, value, unit, device_id, evidence_ids}], caveats}`, and
+   `claims.py` checks each claim against **its own** evidence: the IDs were retrieved this turn (or are
+   `proposal:Pn`), the device belongs to the tenant and is covered by that evidence, and the value and every
+   quantity in the statement appear in those records. When a number exists elsewhere in the turn, the feedback
+   names the record to cite ("it appears in query:q1"), so the retry fixes the attribution instead of guessing.
+   The prose is then rendered from the checked claims (lead, one cited bullet per claim, notes) and still goes
+   through the prose checks above. A model that answers in plain text anyway is verified as prose, and the eval
+   report counts how often that happens (`structured_answers`).
 5. **Chosen evidence, not dumped evidence.** Trend findings cite the window start, the first bad reading,
    the worst reading and the latest. Drift findings cite the last passing and first failing snapshot.
 
@@ -324,13 +335,14 @@ audit log carry the tenant ID and get the same policy.
 - **Bounded tool output.** Tool results sent to an LLM are capped at 25 list items and about 24k characters, with an
   explicit `truncated` note telling the model it saw a page. Counts stay complete and the evidence ledger keeps
   everything, so citations and the policy are unaffected.
-- **Value checks before structured claims.** The verifier extracts quantities from prose and checks them against
-  cited evidence. Having the model emit structured claims `{statement, value, evidence_ids}` and rendering prose
-  from them would be stricter (it would also cover unit-less numbers and comparative statements). It is the next
-  step if prose extraction misses things in practice.
+- **Structured claims over prose extraction.** Parsing numbers out of free text can only check what a regex
+  finds, and it can't tell which record a figure came from. With claims, the model says what it asserts and on
+  what evidence, the server checks each one, and the admin sees prose rendered from facts that passed. Trade-off:
+  answers read more like a checked list than an essay, and the model has to follow a tool schema to finish.
+  `FLEET_ANSWER_FORMAT=prose` keeps the old path for comparison.
 - **Not built yet:** Postgres checkpointer and proposal store (SQLite is wired in through the same interface), a real
   approval UI or Slack app (the signing side is `approvals.sign_decision`), a trained input classifier, human-labelled
   calibration of the LLM judge, human review and growth of the held-out set to ~200, and multi-turn coreference in
-  the offline brain.
+  the offline brain, and live eval runs of the claims answer format.
 
 See [`docs/DATA.md`](docs/DATA.md) for dataset quirks.
