@@ -15,8 +15,6 @@ checkpointer can serialise them for every provider.
 """
 from __future__ import annotations
 
-import json
-
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import (AIMessage, HumanMessage, SystemMessage, ToolMessage,
                                      messages_from_dict, messages_to_dict)
@@ -24,8 +22,9 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from .. import config
 from ..data import TenantScope
-from ..tools import TOOLS
-from .prompts import Plan, plan_to_state, planner_prompt, revise_prompt, system_prompt
+from ..tools import TOOLS, compact_for_model
+from .prompts import (Plan, error_info, plan_to_state, planner_prompt, replan_prompt, revise_prompt,
+                      system_prompt)
 
 
 def _init_model(model_name: str | None) -> BaseChatModel:
@@ -51,13 +50,21 @@ class LangChainBrain:
 
     # ------------------------------------------------------------------ planning
     def plan(self, state: dict, scope: TenantScope) -> dict:
+        return self._plan(scope, state["question"])
+
+    def replan(self, state: dict, scope: TenantScope, reason: str) -> dict:
+        return self._plan(scope, replan_prompt(state, reason))
+
+    def _plan(self, scope: TenantScope, request: str) -> dict:
         try:
-            p = self.llm.with_structured_output(Plan).invoke(
-                [SystemMessage(planner_prompt(scope)), HumanMessage(state["question"])])
-        except Exception:   # provider errors differ by package; planning is best-effort
-            p = None
-        if isinstance(p, dict):
-            p = Plan(**p)
+            p = self.llm.with_structured_output(Plan).invoke([SystemMessage(planner_prompt(scope)), HumanMessage(request)])
+            if isinstance(p, dict):
+                p = Plan(**p)
+            if p is None:
+                return plan_to_state(None, self.model_name, {"type": "EmptyStructuredOutput",
+                                                             "message": "model returned no parsable plan"})
+        except Exception as e:   # provider errors differ by package; planning is best-effort, but never silent
+            return plan_to_state(None, self.model_name, error_info(e))
         return plan_to_state(p, self.model_name)
 
     # ------------------------------------------------------------------ acting
@@ -73,7 +80,8 @@ class LangChainBrain:
         try:
             resp = self.llm_with_tools.invoke([SystemMessage(system_prompt(state, scope)), *messages_from_dict(stored)])
         except Exception as e:  # each provider package raises its own error types
-            return {"answer": f"Model call failed ({type(e).__name__}); no answer produced.", "messages": stored}
+            return {"answer": f"Model call failed ({type(e).__name__}); no answer produced.", "messages": stored,
+                    "error": error_info(e)}
 
         # Some providers omit tool-call ids; assign stable ones so tool results can be paired.
         if resp.tool_calls:
@@ -91,7 +99,7 @@ class LangChainBrain:
 
     def tool_results_message(self, results: list[dict]) -> list[dict]:
         return messages_to_dict([
-            ToolMessage(content=json.dumps(r["result"], default=str), tool_call_id=r["id"],
+            ToolMessage(content=compact_for_model(r["result"]), tool_call_id=r["id"],
                         status="error" if r["is_error"] else "success")
             for r in results
         ])

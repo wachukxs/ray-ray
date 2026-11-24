@@ -19,6 +19,7 @@ from rich.prompt import Prompt
 from rich.table import Table
 
 from . import config
+from .approvals import sign_decision
 from .copilot import FleetCopilot, TurnResult, load_fleet
 
 console = Console()
@@ -63,11 +64,32 @@ def cmd_ask(a) -> int:
     r = c.ask(a.question)
     show(r, a.verbose)
     if r.awaiting_approval:
+        if a.defer:
+            console.print(f"[yellow]Waiting for approval on thread {r.thread_id}. Decide later with: "
+                          f"fleet_copilot decide --tenant {a.tenant} --thread {r.thread_id} --approve P1,... "
+                          f"(needs FLEET_CHECKPOINT_DB to survive this process).[/yellow]")
+            return 0
         if a.approve is None:
             console.print("[yellow]Nothing executed. Re-run with --approve P1,P2 | all, or use `chat` to decide "
                           "interactively. Rejecting all pending proposals.[/yellow]")
-        r = c.decide(r.thread_id, parse_decisions(a.approve, r.awaiting_approval), a.approver)
+        r = _decide(c, r.thread_id, parse_decisions(a.approve, r.awaiting_approval), a.approver)
         show(r, False)
+    return 0
+
+
+def _decide(c: FleetCopilot, thread_id: str, decisions: dict[str, str], approver: str) -> TurnResult:
+    # The CLI stands in for the approval channel: it signs only if it holds FLEET_APPROVAL_SECRET.
+    return c.decide(thread_id, decisions, approver, sign_decision(thread_id, approver, decisions))
+
+
+def cmd_decide(a) -> int:
+    """Decide on a turn that is waiting for approval, e.g. after a restart (needs FLEET_CHECKPOINT_DB)."""
+    c = FleetCopilot(resolve_tenant(a.tenant), mode=a.mode)
+    pending = c.pending(a.thread)
+    if not pending:
+        console.print(f"[yellow]No proposals awaiting approval on thread {a.thread}.[/yellow]")
+        return 1
+    show(_decide(c, a.thread, parse_decisions(a.approve, pending), a.approver), False)
     return 0
 
 
@@ -89,7 +111,7 @@ def cmd_chat(a) -> int:
         show(r, a.verbose)
         if r.awaiting_approval:
             spec = Prompt.ask("Approve which proposals? (comma-separated ids, 'all' or 'none')", default="none")
-            r = c.decide(r.thread_id, parse_decisions(spec, r.awaiting_approval), a.approver)
+            r = _decide(c, r.thread_id, parse_decisions(spec, r.awaiting_approval), a.approver)
             show(r, False)
 
 
@@ -126,7 +148,12 @@ def main(argv: list[str] | None = None) -> int:
     s = sub.add_parser("ask", parents=[common], help="one question")
     s.add_argument("question")
     s.add_argument("--approve", default=None, help="proposal ids to approve: P1,P2 | all | none")
+    s.add_argument("--defer", action="store_true", help="leave proposals pending; decide later with `decide`")
     s.set_defaults(fn=cmd_ask)
+    s = sub.add_parser("decide", parents=[common], help="approve/reject a waiting turn (durable checkpoints)")
+    s.add_argument("--thread", required=True, help="thread id shown when the turn paused")
+    s.add_argument("--approve", default="none", help="proposal ids to approve: P1,P2 | all | none")
+    s.set_defaults(fn=cmd_decide)
     s = sub.add_parser("chat", parents=[common], help="interactive session")
     s.set_defaults(fn=cmd_chat)
     s = sub.add_parser("audit", help="show audit log")

@@ -85,8 +85,17 @@ class FleetCopilot:
                           {"configurable": {"thread_id": thread_id}, "recursion_limit": 60})
         return self._result(thread_id)
 
-    def decide(self, thread_id: str, decisions: dict[str, str], approver: str) -> TurnResult:
-        """Resume an interrupted turn. decisions: {proposal_id: 'approve'|'reject'}."""
-        self.graph.invoke(Command(resume={"decisions": decisions, "approver": approver}),
+    def pending(self, thread_id: str) -> list[dict]:
+        """Proposals still awaiting a decision on a thread (works after a restart with a durable checkpointer)."""
+        snap = self.graph.get_state({"configurable": {"thread_id": thread_id}})
+        return [p for t in snap.tasks for i in t.interrupts for p in i.value.get("proposals", [])]
+
+    def decide(self, thread_id: str, decisions: dict[str, str], approver: str,
+               signature: str | None = None) -> TurnResult:
+        """Resume an interrupted turn. decisions: {proposal_id: 'approve'|'reject'}.
+
+        `signature` comes from the approval channel (see approvals.sign_decision). It is required
+        when FLEET_APPROVAL_SECRET is set; the approver must also hold a role for each action."""
+        self.graph.invoke(Command(resume={"decisions": decisions, "approver": approver, "signature": signature}),
                           {"configurable": {"thread_id": thread_id}, "recursion_limit": 60})
         return self._result(thread_id)
