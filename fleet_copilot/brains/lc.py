@@ -22,6 +22,7 @@ from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from .. import config
 from ..data import TenantScope
+from ..claims import FINAL_ANSWER_DESCRIPTION, FINAL_ANSWER_TOOL, final_answer_schema, parse_final_answer
 from ..tools import TOOLS, compact_for_model
 from .prompts import (Plan, error_info, plan_to_state, planner_prompt, replan_prompt, revise_prompt,
                       system_prompt)
@@ -46,6 +47,9 @@ class LangChainBrain:
         self.llm = model if model is not None else _init_model(model_name)
         self.model_name = model_name or type(self.llm).__name__
         self.tools = [convert_to_openai_tool(t.anthropic_schema()) for t in TOOLS.values()]
+        if config.ANSWER_FORMAT == "claims":
+            self.tools.append(convert_to_openai_tool({"name": FINAL_ANSWER_TOOL, "description": FINAL_ANSWER_DESCRIPTION,
+                                                      "input_schema": final_answer_schema()}))
         self.llm_with_tools = self.llm.bind_tools(self.tools)
 
     # ------------------------------------------------------------------ planning
@@ -89,13 +93,15 @@ class LangChainBrain:
                                for i, tc in enumerate(resp.tool_calls)]
         stored = stored + messages_to_dict([resp])
         calls = [{"id": tc["id"], "name": tc["name"], "args": tc["args"]} for tc in resp.tool_calls]
-        if calls:
+        if len(calls) == 1 and calls[0]["name"] == FINAL_ANSWER_TOOL:
+            return _final(calls[0], stored)
+        if calls:   # a final_answer mixed with data calls is answered with an error by the tools node
             return {"calls": calls, "messages": stored}
         text = resp.text.strip()
         meta = resp.response_metadata or {}
         if (meta.get("finish_reason") or meta.get("stop_reason")) in ("length", "max_tokens", "MAX_TOKENS"):
             text += "\n\n(Answer truncated at the output limit.)"
-        return {"answer": text, "messages": stored}
+        return {"answer": text, "messages": stored, "answer_format": "prose"}
 
     def tool_results_message(self, results: list[dict]) -> list[dict]:
         return messages_to_dict([
@@ -105,4 +111,14 @@ class LangChainBrain:
         ])
 
     def revise(self, state: dict, feedback: list[str]) -> dict:
+        call_id = state.get("final_call_id")
+        if call_id:   # the final_answer tool call needs its result: the verifier's verdict
+            return messages_to_dict([ToolMessage(content=revise_prompt(feedback), tool_call_id=call_id,
+                                                 status="error")])[0]
         return messages_to_dict([HumanMessage(revise_prompt(feedback))])[0]
+
+
+def _final(call: dict, stored: list[dict]) -> dict:
+    claims, err = parse_final_answer(call["args"])
+    return {"answer": "", "claims": claims or {"invalid": err}, "final_call_id": call["id"],
+            "messages": stored, "answer_format": "claims"}

@@ -14,6 +14,7 @@ from __future__ import annotations
 import anthropic
 from .. import config
 from ..data import TenantScope
+from ..claims import FINAL_ANSWER_DESCRIPTION, FINAL_ANSWER_TOOL, final_answer_schema, parse_final_answer
 from ..tools import TOOLS, compact_for_model
 from .prompts import (Plan, error_info, plan_to_state, planner_prompt, replan_prompt, revise_prompt,
                       system_prompt)
@@ -30,6 +31,9 @@ class ClaudeBrain:
         self.model = model
         self.effort = effort
         self.tools = [t.anthropic_schema() for t in TOOLS.values()]
+        if config.ANSWER_FORMAT == "claims":
+            self.tools.append({"name": FINAL_ANSWER_TOOL, "description": FINAL_ANSWER_DESCRIPTION,
+                               "input_schema": final_answer_schema()})
 
     # ------------------------------------------------------------------ planning
     def plan(self, state: dict, scope: TenantScope) -> dict:
@@ -91,12 +95,16 @@ class ClaudeBrain:
         if resp.stop_reason == "refusal":
             return {"answer": "The model declined this request.", "messages": messages}
         calls = [{"id": b.id, "name": b.name, "args": b.input} for b in resp.content if b.type == "tool_use"]
+        if len(calls) == 1 and calls[0]["name"] == FINAL_ANSWER_TOOL:
+            claims, err = parse_final_answer(calls[0]["args"])
+            return {"answer": "", "claims": claims or {"invalid": err}, "final_call_id": calls[0]["id"],
+                    "messages": messages, "answer_format": "claims"}
         if calls:
             return {"calls": calls, "messages": messages}
         text = "\n".join(b.text for b in resp.content if b.type == "text").strip()
         if resp.stop_reason == "max_tokens":
             text += "\n\n(Answer truncated at the output limit.)"
-        return {"answer": text, "messages": messages}
+        return {"answer": text, "messages": messages, "answer_format": "prose"}
 
     def tool_results_message(self, results: list[dict]) -> dict:
         return {"role": "user", "content": [
@@ -106,4 +114,8 @@ class ClaudeBrain:
         ]}
 
     def revise(self, state: dict, feedback: list[str]) -> dict:
+        call_id = state.get("final_call_id")
+        if call_id:   # the final_answer tool_use needs its tool_result: the verifier's verdict
+            return {"role": "user", "content": [{"type": "tool_result", "tool_use_id": call_id, "is_error": True,
+                                                 "content": revise_prompt(feedback)}]}
         return {"role": "user", "content": revise_prompt(feedback)}

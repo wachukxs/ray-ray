@@ -134,6 +134,9 @@ class Verification:
     foreign_leaks: list[str]
     quantities_checked: int = 0
     misattributed_quantities: list[str] = field(default_factory=list)
+    answer_format: str = "prose"      # prose | claims
+    claims: int = 0
+    claims_valid: int = 0
 
     def to_dict(self) -> dict:
         return asdict(self)

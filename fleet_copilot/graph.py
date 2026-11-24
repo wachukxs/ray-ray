@@ -32,6 +32,7 @@ from . import config
 from .actions import ActionProposal, ActionStore, evaluate_policy
 from .approvals import ApproverDirectory, idempotency_key, verify_signature
 from .audit import AuditLog
+from .claims import FINAL_ANSWER_TOOL, check_claims, render
 from .data import FleetData
 from .guardrails import input_guard, verify_answer
 from .planning import plan_progress, replan_reason
@@ -46,6 +47,9 @@ class AgentState(TypedDict, total=False):
     history: list[dict]
     guard: dict
     plan: dict
+    claims: dict
+    final_call_id: str
+    answer_format: str
     plan_progress: dict
     replan_reason: str
     replans: int
@@ -157,7 +161,7 @@ def build_graph(rt: Runtime, checkpointer=None):
 
     def agent(state: AgentState) -> dict:
         if state.get("steps", 0) >= config.MAX_AGENT_STEPS:
-            return {"pending_calls": [], "draft": "I hit the step limit before finishing; the evidence gathered so "
+            return {"pending_calls": [], "claims": {}, "final_call_id": "", "draft": "I hit the step limit before finishing; the evidence gathered so "
                     "far is in the audit log, but I can't give a complete grounded answer.",
                     "trace": state["trace"] + ["agent: step budget exhausted"]}
         out = rt.brain.act(state, scope_of(state))
@@ -166,6 +170,8 @@ def build_graph(rt: Runtime, checkpointer=None):
             audit(state, "model_error", out["error"])
         if "messages" in out:
             upd["messages"] = out["messages"]
+        upd["claims"], upd["final_call_id"] = out.get("claims") or {}, out.get("final_call_id") or ""
+        upd["answer_format"] = out.get("answer_format", "prose")
         if out.get("calls"):
             upd["pending_calls"] = out["calls"]
             upd["trace"] = state["trace"] + [f"agent: call {', '.join(c['name'] for c in out['calls'])}"]
@@ -180,7 +186,10 @@ def build_graph(rt: Runtime, checkpointer=None):
                           [ActionProposal(**p) for p in state.get("proposals", [])])
         results, trace = [], []
         for c in state["pending_calls"]:
-            result, is_err = run_tool(ctx, c["name"], c["args"])
+            if c["name"] == FINAL_ANSWER_TOOL:   # mixed with data calls: not accepted as an answer
+                result, is_err = {"error": "final_answer must be called alone, after the data calls have returned"}, True
+            else:
+                result, is_err = run_tool(ctx, c["name"], c["args"])
             results.append({"id": c["id"], "name": c["name"], "args": c["args"], "result": result, "is_error": is_err})
             status = result.get("status") or (f"{result['count']} result(s)" if "count" in result else
                                               "error" if is_err else "ok")
@@ -198,14 +207,29 @@ def build_graph(rt: Runtime, checkpointer=None):
         return upd
 
     def verifier(state: AgentState) -> dict:
-        v = verify_answer(state.get("draft", ""), _ledger(state), scope_of(state), rt.fleet, state.get("proposals"))
+        claims = state.get("claims") or {}
+        draft, claim_issues, stats = state.get("draft", ""), [], {}
+        if claims:
+            if "invalid" in claims:
+                claim_issues = [claims["invalid"]]
+            else:
+                claim_issues, stats = check_claims(claims, _ledger(state), scope_of(state), rt.fleet,
+                                                   state.get("proposals"))
+                draft = render(claims)
+        v = verify_answer(draft, _ledger(state), scope_of(state), rt.fleet, state.get("proposals"))
+        if claims:
+            v.issues = claim_issues + v.issues
+            v.passed = not v.issues
+            v.answer_format, v.claims, v.claims_valid = "claims", stats.get("claims", 0), stats.get("claims_valid", 0)
         audit(state, "verification", v.to_dict(), evidence=v.citations)
         progress = plan_progress(state.get("plan") or {}, state.get("tool_log", []), finished=True)
         audit(state, "plan_adherence", progress)
         upd: dict = {"verification": v.to_dict(), "verify_attempts": state.get("verify_attempts", 0) + 1,
-                     "plan_progress": progress,
+                     "plan_progress": progress, "draft": draft,
                      "trace": state["trace"] + [f"verifier: {'pass' if v.passed else 'FAIL ' + '; '.join(v.issues[:3])}"
-                                                f" ({v.valid_citations}/{len(v.citations)} citations valid)"]}
+                                                f" ({v.valid_citations}/{len(v.citations)} citations valid"
+                                                + (f", {v.claims_valid}/{v.claims} claims valid" if claims else "")
+                                                + ")"]}
         if not v.passed and upd["verify_attempts"] <= config.MAX_VERIFY_RETRIES:
             msg = rt.brain.revise(state, v.issues)
             if msg:
