@@ -27,15 +27,34 @@ python -m venv .venv
 pip install -e ".[dev]"
 ```
 
-The dataset is already in `data/raw/device-telemetry-dataset.ndjson`. Override it with `FLEET_DATA_PATH`.
-Runtime state (audit log, executed actions) goes to `state/`. Override it with `FLEET_STATE_DIR`.
+The dataset is already in `data/raw/device-telemetry-dataset.ndjson`.
+Runtime state (audit log, executed actions) goes to `state/`.
+
+**Configuration (`.env`)**
+
+Settings are read from environment variables. The copilot also loads a `.env` file at the repo root
+(gitignored, so keys stay out of version control). Variables already set in your shell take precedence over the file.
+
+```bash
+cp .env.example .env        # Windows PowerShell: Copy-Item .env.example .env
+# then edit .env and set ANTHROPIC_API_KEY=sk-ant-...
+```
+
+| variable | default | purpose |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | unset | enables the Claude brain |
+| `FLEET_COPILOT_MODE` | `claude` if a key is set, else `offline` | which brain to use (`--mode` on the CLI overrides it) |
+| `FLEET_COPILOT_MODEL` | `claude-opus-5-5` | Claude model ID |
+| `FLEET_COPILOT_EFFORT` | `medium` | Claude effort: `low` · `medium` · `high` · `xhigh` · `max` |
+| `FLEET_DATA_PATH` | `data/raw/device-telemetry-dataset.ndjson` | telemetry file |
+| `FLEET_STATE_DIR` | `state/` | audit log and executed actions |
 
 **Brain selection**
 
 | mode | how | when |
 |---|---|---|
 | `offline` (default without a key) | rule-based planner + recipes | reproducible demo and evals, no network |
-| `claude` | `export ANTHROPIC_API_KEY=...` (or `--mode claude`) | natural-language robustness; model `claude-opus-5-5` (override with `FLEET_COPILOT_MODEL`), effort via `FLEET_COPILOT_EFFORT` |
+| `claude` | set `ANTHROPIC_API_KEY` in `.env` or your shell (or pass `--mode claude`) | natural-language robustness |
 
 ## 2. Run the agent
 
@@ -57,7 +76,7 @@ Things to try: "Give me a fleet health summary", "Which batteries are approachin
 
 ```bash
 python -m evals.run                  # offline brain: deterministic, about 5 s
-python -m evals.run --mode claude    # same suite against the Claude brain
+python -m evals.run --mode claude    # same suite against the Claude brain (needs ANTHROPIC_API_KEY)
 python -m evals.run --only act- -v   # subset, with traces for failures
 pytest                               # 26 unit tests (incl. Claude tool loop against a stub client)
 ```

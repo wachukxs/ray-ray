@@ -9,6 +9,7 @@ dependencies = [
     "pydantic>=2.10",
     "pyyaml>=6.0",
     "rich>=13",
+    "python-dotenv>=1.0",
 ]
 
 [project.optional-dependencies]

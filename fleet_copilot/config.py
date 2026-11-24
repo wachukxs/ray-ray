@@ -9,7 +9,13 @@ from __future__ import annotations
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 ROOT = Path(__file__).resolve().parent.parent
+
+# Load <repo>/.env (gitignored) before reading any setting. Variables already set in the
+# shell win over the file, so CI or a one-off `$env:...` override still works.
+load_dotenv(ROOT / ".env", override=False)
 DATA_PATH = Path(os.environ.get("FLEET_DATA_PATH", ROOT / "data" / "raw" / "device-telemetry-dataset.ndjson"))
 STATE_DIR = Path(os.environ.get("FLEET_STATE_DIR", ROOT / "state"))
 
