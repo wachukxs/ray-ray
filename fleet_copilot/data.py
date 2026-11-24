@@ -95,6 +95,7 @@ class Snapshot:
             "ram_gb": self.ram_gb,
             "ram_used_pct": self.ram_used_pct,
             "disk_size_gb": self.disk_size_gb,
+            "disk_free_gb": self.disk_free_gb,
             "disk_free_pct": self.disk_free_pct,
             "battery": None if not self.battery_present else {
                 "condition": self.battery_condition,
@@ -225,6 +226,17 @@ class TenantScope:
         self.company_name = config.COMPANY_NAMES.get(company_id, company_id)
         self._devices = devices
         self.as_of = as_of
+        self._memo: dict = {}
+
+    def memo(self, key, compute):
+        """Cache a derived value for the life of this scope object.
+
+        A scope is created per graph node (one per tool batch, one per execution pass), and the
+        telemetry is immutable, so detector results can be shared by every policy check in it.
+        """
+        if key not in self._memo:
+            self._memo[key] = compute()
+        return self._memo[key]
 
     def devices(self) -> list[DeviceHistory]:
         return [self._devices[k] for k in sorted(self._devices)]

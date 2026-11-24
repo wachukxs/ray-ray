@@ -17,19 +17,38 @@ from . import config
 _LOCK = threading.Lock()
 
 
+def _read_last_line(path: Path) -> str | None:
+    """Last non-empty line, read backwards from the end (O(line length), not O(file))."""
+    with open(path, "rb") as f:
+        f.seek(0, 2)
+        pos = f.tell()
+        buf = b""
+        while pos > 0:
+            step = min(4096, pos)
+            pos -= step
+            f.seek(pos)
+            buf = f.read(step) + buf
+            lines = [l for l in buf.split(b"\n") if l.strip()]
+            if len(lines) > 1 or (lines and pos == 0):
+                return lines[-1].decode("utf-8")
+    return None
+
+
 class AuditLog:
     def __init__(self, path: Path | None = None):
         self.path = Path(path or config.STATE_DIR / "audit.jsonl")
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        # (file size, hash of last entry). Valid while nobody else has appended to the file;
+        # a size mismatch (another writer) falls back to reading only the file's last line.
+        self._tail: tuple[int, str] | None = None
 
     def _last_hash(self) -> str:
         if not self.path.exists():
             return "genesis"
-        last = None
-        with open(self.path, encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    last = line
+        size = self.path.stat().st_size
+        if self._tail and self._tail[0] == size:
+            return self._tail[1]
+        last = _read_last_line(self.path) if size else None
         return json.loads(last)["hash"] if last else "genesis"
 
     def record(self, *, event: str, tenant: str, session_id: str, actor: str = "agent",
@@ -47,8 +66,9 @@ class AuditLog:
             }
             body = json.dumps(entry, sort_keys=True, default=str)
             entry["hash"] = hashlib.sha256(body.encode()).hexdigest()[:16]
-            with open(self.path, "a", encoding="utf-8") as f:
+            with open(self.path, "a", encoding="utf-8", newline="\n") as f:
                 f.write(json.dumps(entry, default=str) + "\n")
+            self._tail = (self.path.stat().st_size, entry["hash"])
             return entry
 
     def entries(self, session_id: str | None = None) -> list[dict]:

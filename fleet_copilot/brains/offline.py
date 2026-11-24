@@ -6,14 +6,18 @@ answer) but driven by an intent router and recipes instead of a model. It exists
     evaluated with no API key and fully deterministic output;
   * the eval suite has a reproducible baseline to compare the LLM brain against.
 
-A recipe is a small state machine: `next_calls(tool_log)` looks at what has been
+A recipe is a small state machine: `next_calls(round, tool_log)` looks at what has been
 retrieved so far and returns the next batch of tool calls (or None when done);
 `compose(tool_log)` writes the answer, citing only IDs returned by tools.
+
+The brain itself is stateless. The recipe is re-derived from the question on every call and
+the round comes from the graph's own step counter, so everything a resumed turn needs lives in
+the checkpointed graph state (nothing on the brain object).
 """
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Callable
 
 from ..data import TenantScope
@@ -44,16 +48,13 @@ class Recipe:
     first: list[dict]
     follow: Callable[[list[dict]], list[dict] | None] | None = None
     composer: Callable[[list[dict]], str] | None = None
-    rounds: int = field(default=0)
 
-    def next_calls(self, log: list[dict]) -> list[dict] | None:
-        if self.rounds == 0:
-            self.rounds = 1
-            return self.first
-        if self.follow and self.rounds == 1:
-            self.rounds = 2
-            calls = self.follow(log)
-            return calls or None
+    def next_calls(self, round_: int, log: list[dict]) -> list[dict] | None:
+        """round_ = number of agent steps already taken this turn (graph state `steps`)."""
+        if round_ == 0:
+            return self.first or None
+        if self.follow and round_ == 1:
+            return self.follow(log) or None
         return None
 
 
@@ -109,14 +110,15 @@ def _evidence_of(f: dict) -> list[str]:
 class OfflineBrain:
     name = "offline"
 
-    def __init__(self):
-        self._recipes: dict[str, Recipe] = {}
-
     # ------------------------------------------------------------------ planning
     def plan(self, state: dict, scope: TenantScope) -> dict:
         recipe = self._route(state["question"], scope)
-        self._recipes[state["thread_id"]] = recipe
-        return {"intent": recipe.intent, "steps": recipe.steps, "planner": "offline-router"}
+        tools = list(dict.fromkeys(c["name"] for c in recipe.first))
+        return {"intent": recipe.intent, "steps": recipe.steps, "tools": tools, "planner": "offline-router"}
+
+    def replan(self, state: dict, scope: TenantScope, reason: str) -> dict | None:
+        """A deterministic router has nothing new to plan with; keep the current plan."""
+        return None
 
     def _route(self, question: str, scope: TenantScope) -> Recipe:
         q = question.lower()
@@ -473,8 +475,8 @@ class OfflineBrain:
 
     # ------------------------------------------------------------------ loop contract
     def act(self, state: dict, scope: TenantScope) -> dict:
-        recipe = self._recipes[state["thread_id"]]
-        calls = recipe.next_calls(state.get("tool_log", []))
+        recipe = self._route(state["question"], scope)
+        calls = recipe.next_calls(state.get("steps", 0), state.get("tool_log", []))
         if calls:
             return {"calls": [{"id": f"c{len(state.get('tool_log', [])) + i + 1}", **c} for i, c in enumerate(calls)]}
         return {"answer": recipe.composer(state.get("tool_log", []))}
