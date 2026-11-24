@@ -1,0 +1,28 @@
+[project]
+name = "fleet-copilot"
+version = "0.1.0"
+description = "Agentic AI Fleet Copilot over device telemetry (LangGraph + Claude, with a deterministic offline brain)"
+requires-python = ">=3.11"
+dependencies = [
+    "langgraph>=1.2",
+    "anthropic>=2.13",
+    "pydantic>=2.10",
+    "pyyaml>=6.0",
+    "rich>=13",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8"]
+
+[project.scripts]
+fleet-copilot = "fleet_copilot.cli:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["fleet_copilot*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
