@@ -22,6 +22,9 @@ langchain = [
     "langchain-anthropic>=1.0",
 ]
 
+# Durable checkpoints: pending approvals survive a restart (FLEET_CHECKPOINT_DB=state/checkpoints.sqlite).
+durable = ["langgraph-checkpoint-sqlite>=3"]
+
 [project.scripts]
 fleet-copilot = "fleet_copilot.cli:main"
 

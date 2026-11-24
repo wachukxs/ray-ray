@@ -84,7 +84,7 @@ def test_tools_are_bound_without_tenant_argument(fleet, state_dir):
     model = ScriptedChatModel(script=[AIMessage(content="No tools needed.")])
     _copilot(fleet, state_dir, model)
     names = {t["function"]["name"] for t in model.bound_tools}
-    assert len(names) == 17
+    assert len(names) == 18 and "final_answer" in names   # 17 data/action tools + the structured answer
     for t in model.bound_tools:
         assert "company_id" not in t["function"]["parameters"].get("properties", {})
 

@@ -47,7 +47,18 @@ APPROVED_SOFTWARE = {"Google Chrome", "Slack", "Zoom", "1Password", "Visual Stud
 # --- Agent ---------------------------------------------------------------------------
 MAX_AGENT_STEPS = 8               # hard cap on agent<->tool iterations per turn
 MAX_VERIFY_RETRIES = 1            # re-plan attempts when the verifier rejects an answer
+# How LLM brains deliver the final answer: "claims" (final_answer tool with structured, server-checked
+# claims; prose is rendered from them) or "prose" (free text with inline citations, checked by the verifier).
+ANSWER_FORMAT = os.environ.get("FLEET_ANSWER_FORMAT", "claims")
+MAX_REPLANS = 1                   # re-plan attempts when a tool errors or an empty result breaks the plan
 MAX_NOTIFY_MESSAGE_CHARS = 500
+MAX_RESULTS_TO_MODEL = 25         # list items per tool result sent to an LLM (the ledger keeps all of them)
+MAX_RESULT_CHARS_TO_MODEL = 24_000  # hard cap on one serialised tool result sent to an LLM
+
+PROPOSAL_TTL_HOURS = float(os.environ.get("FLEET_PROPOSAL_TTL_HOURS", "24"))  # approval window per proposal
+
+# Durable checkpoints (pending approvals survive a restart). Needs the `durable` extra.
+CHECKPOINT_DB = os.environ.get("FLEET_CHECKPOINT_DB") or None
 
 CLAUDE_MODEL = os.environ.get("FLEET_COPILOT_MODEL", "claude-opus-5-5")
 CLAUDE_EFFORT = os.environ.get("FLEET_COPILOT_EFFORT", "medium")

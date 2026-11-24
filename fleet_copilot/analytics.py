@@ -295,20 +295,24 @@ def compliance_drift(scope: TenantScope) -> dict:
 
 
 def device_findings(scope: TenantScope, device_id: str) -> dict[str, list[Finding]]:
-    """All active findings for one device - used by the evidence policy."""
+    """All active findings for one device - used by the evidence policy.
+
+    The fleet-wide detectors run once per scope object and are reused for every device and
+    every policy check in it (a batch of N proposals used to re-run all seven detectors N times).
+    """
     def mine(fs):
         return [f for f in fs if f.device_id == device_id]
     scope.device(device_id)  # raises if foreign
-    drift = compliance_drift(scope)
-    return {
-        "low_disk": mine(low_disk(scope)),
-        "storage": mine(storage_pressure(scope)),
-        "ram": mine(ram_pressure(scope)),
-        "battery": mine(battery_health(scope)),
-        "compliance": mine(compliance_failures(scope)),
-        "regressions": mine(drift["regressions"]),
-        "unapproved_software": mine(unapproved_software(scope)),
-    }
+    every = scope.memo("device_findings:all", lambda: {
+        "low_disk": low_disk(scope),
+        "storage": storage_pressure(scope),
+        "ram": ram_pressure(scope),
+        "battery": battery_health(scope),
+        "compliance": compliance_failures(scope),
+        "regressions": compliance_drift(scope)["regressions"],
+        "unapproved_software": unapproved_software(scope),
+    })
+    return {kind: mine(fs) for kind, fs in every.items()}
 
 
 def latest_snapshot(h: DeviceHistory) -> Snapshot:

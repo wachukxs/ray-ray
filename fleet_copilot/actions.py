@@ -42,7 +42,11 @@ class ActionProposal:
     target_device: str | None = None
     target_employee: str | None = None
     policy: dict = field(default_factory=dict)
-    status: str = "pending_approval"   # pending_approval | approved | rejected | executed | blocked
+    status: str = "pending_approval"   # pending_approval | approved | rejected | executed | blocked | expired
+    created_at: str = ""               # wall clock, for the approval TTL
+    data_as_of: str = ""               # telemetry as-of the proposal was made on; newer data => stale
+    idempotency_key: str | None = None # set on approval; carried to the downstream system
+    decision: dict = field(default_factory=dict)   # approver, signed, authorization reason
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -194,14 +198,25 @@ class ActionStore:
         with open(self.path, encoding="utf-8") as f:
             return [json.loads(l) for l in f if l.strip()]
 
+    def by_idempotency_key(self, key: str) -> dict | None:
+        return next((r for r in self.all() if r.get("idempotency_key") == key), None)
+
     def open_ticket_exists(self, tenant: str, device_id: str, check_id: str) -> bool:
         return any(r["tenant"] == tenant and r["action"] == "open_remediation_ticket"
                    and r["args"].get("device_id") == device_id and r["args"].get("check_id") == check_id
                    for r in self.all())
 
     def execute(self, tenant: str, proposal: ActionProposal, approver: str) -> dict:
+        """Idempotent on `proposal.idempotency_key`: a retried execution returns the original record
+        (flagged `duplicate`) instead of writing a second ticket/order. A real integration sends the
+        same key to the downstream API (e.g. an Idempotency-Key header)."""
+        if proposal.idempotency_key:
+            prior = self.by_idempotency_key(proposal.idempotency_key)
+            if prior:
+                return {**prior, "duplicate": True}
         key = json.dumps([tenant, proposal.action, proposal.args], sort_keys=True)
         record = {
+            "idempotency_key": proposal.idempotency_key,
             "action_id": "ACT-" + hashlib.sha256(key.encode()).hexdigest()[:10].upper(),
             "tenant": tenant,
             "action": proposal.action,

@@ -12,8 +12,10 @@ Design rules
 """
 from __future__ import annotations
 
+import re
 from collections import Counter
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 from typing import Any, Callable, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
@@ -26,6 +28,30 @@ from .data import NotFoundInTenant, TenantScope
 
 # --------------------------------------------------------------------------- context
 
+_NUM_RE = re.compile(r"(?<![\w.])-?\d+(?:\.\d+)?")
+
+
+def harvest_numbers(obj, out: set[float] | None = None) -> set[float]:
+    """Every number a tool result states: numeric fields and numbers inside its strings
+    (finding text, definitions). The verifier checks quoted figures against this set."""
+    out = set() if out is None else out
+    if isinstance(obj, bool) or obj is None:
+        return out
+    if isinstance(obj, (int, float)):
+        out.add(float(obj))
+    elif isinstance(obj, str):
+        if not obj.startswith(("snap:", "query:")):
+            out.update(float(m) for m in _NUM_RE.findall(obj))
+    elif isinstance(obj, dict):
+        for k, v in obj.items():
+            if k not in ("evidence", "evidence_id", "collected_at", "as_of", "first", "last"):
+                harvest_numbers(v, out)
+    elif isinstance(obj, (list, tuple)):
+        for v in obj:
+            harvest_numbers(v, out)
+    return out
+
+
 @dataclass
 class Ledger:
     """Everything the agent has *seen* this turn. The verifier only accepts citations from here."""
@@ -33,7 +59,13 @@ class Ledger:
     query_seq: int = 0
 
     def add_snapshot(self, summary: dict) -> None:
-        self.records.setdefault(summary["evidence_id"], {"kind": "snapshot", **summary})
+        self.records.setdefault(summary["evidence_id"], {"kind": "snapshot", **summary,
+                                                         "values": sorted(harvest_numbers(summary))})
+
+    def attach_values(self, qid: str | None, result: dict) -> None:
+        """Record the numbers a query's result stated, so figures citing [query:qN] can be checked."""
+        if qid in self.records:
+            self.records[qid]["values"] = sorted(harvest_numbers(result))
 
     def add_query(self, tool: str, args: dict, count: int, definition: str, devices: list[str] | None = None) -> str:
         self.query_seq += 1
@@ -292,7 +324,9 @@ def _propose(ctx: ToolContext, action: str, a: Strict, justification: str) -> di
     pid = f"P{len(ctx.proposals) + 1}"
     p = ActionProposal(pid, action, args, justification, list(args["evidence_ids"]),
                        target_device=args.get("device_id"), target_employee=args.get("employee_id"),
-                       policy=policy.to_dict(), status="pending_approval" if policy.allowed else "blocked")
+                       policy=policy.to_dict(), status="pending_approval" if policy.allowed else "blocked",
+                       created_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                       data_as_of=ctx.scope.as_of)
     ctx.audit.record(event="action_proposed" if policy.allowed else "action_refused", tenant=ctx.scope.company_id,
                      session_id=ctx.session_id, payload={"proposal": p.to_dict()}, evidence=p.evidence)
     if not policy.allowed:
@@ -358,6 +392,31 @@ TOOLS: dict[str, ToolSpec] = {t.name: t for t in [
 assert set(ACTIONS) == {n for n, t in TOOLS.items() if t.kind == "action"}
 
 
+def compact_for_model(result: dict, max_items: int | None = None, max_chars: int | None = None) -> str:
+    """Serialise a tool result for an LLM, bounded in size.
+
+    Long lists (`results`, `devices`, `series`, drift lists) are cut to `max_items` with an
+    explicit `truncated` note, so the model knows it saw a page, not everything. The evidence
+    ledger still holds every record, so citations and the evidence policy are unaffected.
+    """
+    import json
+    max_items = max_items or config.MAX_RESULTS_TO_MODEL
+    max_chars = max_chars or config.MAX_RESULT_CHARS_TO_MODEL
+    out, truncated = dict(result), {}
+    for key in ("results", "devices", "series", "regressions", "improvements", "persistent_failures"):
+        v = out.get(key)
+        if isinstance(v, list) and len(v) > max_items:
+            out[key] = v[:max_items]
+            truncated[key] = {"shown": max_items, "total": len(v)}
+    if truncated:
+        out["truncated"] = {**truncated, "note": "Only the first items are shown. Counts are complete. "
+                                                 "Narrow the query with filters to see others."}
+    text = json.dumps(out, default=str)
+    if len(text) > max_chars:
+        text = text[:max_chars] + '..." [output cut at size limit; narrow the query]'
+    return text
+
+
 def run_tool(ctx: ToolContext, name: str, raw_args: dict) -> tuple[dict, bool]:
     """Validate, execute and audit one tool call. Returns (result, is_error)."""
     spec = TOOLS.get(name)
@@ -366,6 +425,7 @@ def run_tool(ctx: ToolContext, name: str, raw_args: dict) -> tuple[dict, bool]:
     else:
         try:
             result, err = spec.fn(ctx, spec.input_model.model_validate(raw_args or {})), False
+            ctx.ledger.attach_values(result.get("query_id"), result)
         except ValidationError as e:
             result, err = {"error": "invalid arguments", "details": e.errors(include_url=False, include_input=False)}, True
         except NotFoundInTenant as e:

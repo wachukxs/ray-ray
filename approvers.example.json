@@ -1,0 +1,14 @@
+{
+  "approvers": {
+    "it-lead@acme.example": {"roles": ["it_admin"], "tenants": ["acme-001"]},
+    "helpdesk@acme.example": {"roles": ["it_ops"], "tenants": ["acme-001"]},
+    "purchasing@acme.example": {"roles": ["procurement"], "tenants": ["acme-001"]},
+    "it-lead@globex.example": {"roles": ["it_admin"], "tenants": ["globex-002"]}
+  },
+  "action_roles": {
+    "open_remediation_ticket": ["it_ops", "it_admin"],
+    "notify_employee": ["it_ops", "it_admin"],
+    "create_upgrade_order": ["procurement", "it_admin"],
+    "flag_device_for_replacement": ["procurement", "it_admin"]
+  }
+}
